@@ -118,7 +118,7 @@ int __cdecl main(void) {
     printf("Handshake recebido: %s\n", recvbuf);
     sscanf(recvbuf, "MODE=%[^;];MAX=%d", modo, &maximo);
     printf("Modo: %s\n", modo);
-    printf("Tamanho máximo: %d\n", maximo);
+    printf("Tamanho maximo: %d\n", maximo);
     } 
 
     sprintf(sendbuf, "WINDOW=%d", janela);
@@ -134,7 +134,7 @@ int __cdecl main(void) {
             //aqui entra o bloco de código que processa a mensagem recebida e envia uma resposta de volta pro cliente
 
         }else if (iResult ==0){
-            printf("conexão encerrada....\n");
+            printf("conexao encerrada....\n");
         } else{
             printf("recv falhou com erro: %d\n", WSAGetLastError());
             closesocket(ClientSocket);

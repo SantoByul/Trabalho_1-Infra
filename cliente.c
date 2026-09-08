@@ -61,7 +61,7 @@ int main(int argc, char**argv){
     }
 
     // tenta conectar no endereço do servidor
-    printf("===============\nTentando se conectar no servidor de endereço %s na porta %s...\n", IP_SERVIDOR, PORTA);
+    printf("===============\nTentando se conectar no servidor de co %s na porta %s...\n", IP_SERVIDOR, PORTA);
     for(ptr=result; ptr!=NULL; ptr=ptr->ai_next){
 
         //cria um socket para conectar no servidor
@@ -87,7 +87,7 @@ int main(int argc, char**argv){
     freeaddrinfo(result);
 
     if(ConnectSocket==INVALID_SOCKET){
-        printf("Não foi possível conectar ao servidor!\n");
+        printf("Nao foi possivel conectar ao servidor!\n");
         system("pause");
         WSACleanup();
         return 1;
