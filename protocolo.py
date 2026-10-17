@@ -28,37 +28,30 @@ def calcular_checksum(dados:bytes) ->int:
 
 
 #Ponto extra: criptografia simetrica hands-on
-def cifrar_vigenere(texto: str, chave: str = CHAVE_CRIPTOGRAFIA) ->str:
-     resultado = []
-     
-     #percorre cada caractere da string junto com o indice i
-     for i, char in enumerate(texto):
+# Ponto extra: criptografia simetrica hands-on
+def cifrar_vigenere(texto: str, chave: str = CHAVE_CRIPTOGRAFIA) -> str:
+    resultado = []
 
-        deslocamento = ord(chave[i % len(chave)]) #descobre o valor de ASCII
+    # percorre cada caractere da string junto com o indice i
+    for i, char in enumerate(texto):
+        deslocamento = ord(chave[i % len(chave)])  # descobre o valor de ASCII
+        char_cifrado = chr((ord(char) + deslocamento) % 256)
+        resultado.append(char_cifrado)
 
-        char_cifrado = chr((ord(char) + deslocamento) %256)
-        resultado.append(
-            char_cifrado
-        )
-    
-    #junta todos os caracteres transformados em uma unica string cifrada
-    return "".join(
-        resultado
-    )
+    # junta todos os caracteres transformados em uma unica string cifrada
+    return "".join(resultado)
+
 
 def decifrar_vigenere(
     texto_cifrado: str, chave: str = CHAVE_CRIPTOGRAFIA
-) ->str:
+) -> str:
+    # decifra o texto revertendo a operaçao matematica do deslocamento feito na cifragem
+    resultado = []
 
-    #decifra o texto revertendo a operaçao matematica do deslocamento feito na cifragem
-     resultado = []
-
-     for i, char in enumerate(texto_cifrado):
+    for i, char in enumerate(texto_cifrado):
         deslocamento = ord(chave[i % len(chave)])
-
         # subtrai o deslocamento para voltar ao caractere ASCII original.
         char_decifrado = chr((ord(char) - deslocamento) % 256)
-
         resultado.append(char_decifrado)
 
     return "".join(resultado)
