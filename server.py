@@ -5,6 +5,7 @@ from protocolo import(
     FLAG_SYN,
     criar_pacote,
     desempacotar_pacote,
+    receber_pacote,
 )
 
 #configuraçoes de rede
@@ -29,16 +30,14 @@ def iniciar_servidor():
     print(f"[+] Cliente conectado com sucesso! Origem: {addr}\n")
 
     #etapa 1: handshake inicial
-    dados_handshake = conn.recv(1024)
-    pkt_syn = desempacotar_pacote(dados_handshake)
+    pkt_syn = receber_pacote(conn)
 
     if pkt_syn and (pkt_syn["flags"] & FLAG_SYN):
         print("--- [METADADOS] HANDSHAKE RECEBIDO DO CLIENTE ---")
         print(f"SeqNum Recebido: {pkt_syn['seq_num']}")
         print(f"Checksum Válido: {pkt_syn['is_valido']}")
-        print(f"Payload do Handshake: '{pkt_syn['payload']}'")
+        print(f"Payload do Handshake: {pkt_syn['payload']!r}")
 
-        # Responde o Handshake enviando SYN+ACK e definindo o tamanho da janela inicial
         resposta_syn = criar_pacote(
             seq_num=0,
             ack_num=pkt_syn["seq_num"],
@@ -50,34 +49,36 @@ def iniciar_servidor():
             f"[>] Resposta SYN+ACK enviada ao cliente com Janela = {TAMANHO_JANELA_INICIAL}\n"
         )
 
-    #etapa 2: recebimento de pacote de dados
     mensagem_reconstruida = []
+    proximo_seq_esperado = 0
+    ultimo_ack_enviado = None
 
     while True:
-        dados = conn.recv(1024)
-        if not dados:
+        pacote = receber_pacote(conn)
+        if pacote is None:
             break
 
-        # Extrai e valida o pacote usando o seu protocol.py
-        pacote = desempacotar_pacote(dados)
-        if not pacote:
-            continue
-
-        # Exibição obrigatória dos metadados individuais
         print("--- [METADADOS] PACOTE RECEBIDO NO SERVIDO ---")
         print(f"Número de Sequência (SeqNum) : {pacote['seq_num']}")
         print(f"Flags de Controle           : {pacote['flags']}")
         print(f"Checksum Recebido           : {hex(pacote['checksum'])}")
         print(f"Integridade do Checksum     : {pacote['is_valido']}")
-        print(f"Payload Decifrado (4 chars) : '{pacote['payload']}'")
+        print(f"Payload Decifrado (4 chars) : {pacote['payload']!r}")
 
-        # Verifica se o cliente enviou o sinal de fim de transmissão (FIN)
+        if not pacote["is_valido"] or pacote["seq_num"] != proximo_seq_esperado:
+            print(
+                f"[!] Pacote descartado (esperado SeqNum={proximo_seq_esperado}, "
+                f"recebido={pacote['seq_num']}, válido={pacote['is_valido']}).\n"
+            )
+            if ultimo_ack_enviado is not None:
+                conn.sendall(ultimo_ack_enviado)
+                print("[>] Reenviado último ACK válido ao cliente.\n")
+            continue
+
         if pacote["flags"] & FLAG_FIN:
             print(
                 "\n[!] Sinal de Encerramento (FIN) detectado. Finalizando recepção..."
             )
-
-            # Responde confirmando o término da transmissão (ACK + FIN)
             ack_fin = criar_pacote(
                 seq_num=0,
                 ack_num=pacote["seq_num"],
@@ -87,21 +88,20 @@ def iniciar_servidor():
             conn.sendall(ack_fin)
             break
 
-        # Se o pacote é íntegro, armazena o payload e envia o ACK
-        if pacote["is_valido"]:
-            mensagem_reconstruida.append(pacote["payload"])
+        mensagem_reconstruida.append(pacote["payload"])
 
-            # Cria o pacote de ACK (confirmação)
-            ack_pkt = criar_pacote(
-                seq_num=0,
-                ack_num=pacote["seq_num"],
-                flags=FLAG_ACK,
-                payload_texto="ACK",
-            )
-            conn.sendall(ack_pkt)
-            print(
-                f"[>] Confirmação (ACK {pacote['seq_num']}) enviada ao cliente."
-            )
+        ack_pkt = criar_pacote(
+            seq_num=0,
+            ack_num=pacote["seq_num"],
+            flags=FLAG_ACK,
+            payload_texto="ACK",
+        )
+        conn.sendall(ack_pkt)
+        ultimo_ack_enviado = ack_pkt
+        proximo_seq_esperado += 1
+        print(
+            f"[>] Confirmação (ACK {pacote['seq_num']}) enviada ao cliente."
+        )
 
     #etapa 3: reconstituicao e exibiçao da mensage, final
     texto_final = "".join(mensagem_reconstruida)
