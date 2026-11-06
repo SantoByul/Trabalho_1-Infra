@@ -49,6 +49,7 @@ def iniciar_servidor():
             f"[>] Resposta SYN+ACK enviada ao cliente com Janela = {TAMANHO_JANELA_INICIAL}\n"
         )
 
+    #etapa 2
     mensagem_reconstruida = []
     proximo_seq_esperado = 0
     ultimo_ack_enviado = None

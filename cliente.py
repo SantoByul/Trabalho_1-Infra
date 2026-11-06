@@ -1,4 +1,5 @@
 import socket
+import time 
 from protocolo import (
     FLAG_ACK,
     FLAG_FIN,
@@ -32,10 +33,32 @@ def exibir_metadados(pacote, direcao: str):
 
 
 def iniciar_cliente():
-    cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    cliente.connect((HOST, PORTA))
-    print(f"[*] Conectado ao servidor {HOST}:{PORTA}\n")
+    cliente =  None
+    conectado = False
+    tentativas = 5
 
+    #tratamento de conexao(evita o bug de rodar o cliente antes do servidor)
+    while not conectado and tentativas > 0:
+        try:
+            cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cliente.connect((HOST, PORTA))
+            conectado = True
+            print(f"[*] Conectado ao servidor {HOST}:{PORTA} com sucesso!\n")
+        except ConnectionRefusedError:
+            tentativas -= 1
+            if cliente:
+                cliente.close()
+            print(
+                f"[!] Servidor em {HOST}:{PORTA} não encontrado. Tentando novamente em 2s... (Tentativas restantes: {tentativas})"
+            )
+            time.sleep(2)
+
+    if not conectado:
+        print(
+            "\n[X] Erro: Não foi possível conectar ao servidor. Certifique-se de executar 'python3 server.py' primeiro."
+        )
+        return
+    #handshake
     pacote_syn = criar_pacote(seq_num=0, ack_num=0, flags=FLAG_SYN, payload_texto="SYN")
     exibir_metadados(desempacotar_pacote(pacote_syn), "ENVIADO (SYN)")
     cliente.sendall(pacote_syn)
@@ -51,6 +74,7 @@ def iniciar_cliente():
     tamanho_janela = int(pkt_syn_ack["payload"])
     print(f"[*] Tamanho da janela definido pelo servidor: {tamanho_janela}\n")
 
+    #entrada da mensagem
     mensagem = input("Digite a mensagem a ser enviada (mínimo 30 caracteres): ")
     while len(mensagem) < TAMANHO_MINIMO_MENSAGEM:
         print(f"[!] Mensagem muito curta ({len(mensagem)} caracteres). Tente novamente.")
@@ -62,6 +86,7 @@ def iniciar_cliente():
     ]
     print(f"[*] Mensagem fatiada em {len(blocos)} blocos.\n")
 
+    #envio da janela
     base = 0
     proximo_a_enviar = 0
 
@@ -90,6 +115,7 @@ def iniciar_cliente():
             print(f"[!] Timeout esperando ACK. Retransmitindo a partir do SeqNum={base}...\n")
             proximo_a_enviar = base
 
+    #encerramento(FIN)
     seq_fin = len(blocos)
     fin_confirmado = False
 
