@@ -139,4 +139,4 @@ def iniciar_cliente():
 
 
 if __name__ == "__main__":
-    iniciar_cliente()
+    iniciar_cliente() 

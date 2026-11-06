@@ -66,16 +66,34 @@ def iniciar_servidor():
         print(f"Integridade do Checksum     : {pacote['is_valido']}")
         print(f"Payload Decifrado (4 chars) : {pacote['payload']!r}")
 
-        if not pacote["is_valido"] or pacote["seq_num"] != proximo_seq_esperado:
+        #Checkpoint 3 - verificação rdt de integridade e ordem
+        #CENÁRIO 1: PACOTE CORROMPIDO (Checksum falhou)
+        if not pacote["is_valido"]:
             print(
-                f"[!] Pacote descartado (esperado SeqNum={proximo_seq_esperado}, "
-                f"recebido={pacote['seq_num']}, válido={pacote['is_valido']}).\n"
+                f"\n [ERRO RDT] Checksum INVÁLIDO no pacote SeqNum={pacote['seq_num']}! Pacote descartado."
+            )
+            if ultimo_ack_enviado is not None:
+                print(
+                    " [RDT RECOVERY] Reenviando último ACK válido ao cliente..."
+                )
+                conn.sendall(ultimo_ack_enviado)
+            print("-" * 50 + "\n")
+            continue
+
+        #CENÁRIO 2: PACOTE FORA DE ORDEM
+        if pacote["seq_num"] != proximo_seq_esperado:
+            print(
+                f"\n [ERRO RDT] Pacote FORA DE ORDEM! Esperado SeqNum={proximo_seq_esperado}, recebido={pacote['seq_num']}."
+            )
+            print(
+                " [RDT RECOVERY] Pacote descartado. Reenviando último ACK válido ao cliente..."
             )
             if ultimo_ack_enviado is not None:
                 conn.sendall(ultimo_ack_enviado)
-                print("[>] Reenviado último ACK válido ao cliente.\n")
+            print("-" * 50 + "\n")
             continue
-
+        
+        #CENÁRIO 3: SINAL DE ENCERRAMENTO (FIN)
         if pacote["flags"] & FLAG_FIN:
             print(
                 "\n[!] Sinal de Encerramento (FIN) detectado. Finalizando recepção..."
@@ -89,6 +107,7 @@ def iniciar_servidor():
             conn.sendall(ack_fin)
             break
 
+        # CENÁRIO 4: PACOTE VÁLIDO E EM ORDEM (Caminho Feliz / Recuperado)
         mensagem_reconstruida.append(pacote["payload"])
 
         ack_pkt = criar_pacote(
@@ -100,15 +119,20 @@ def iniciar_servidor():
         conn.sendall(ack_pkt)
         ultimo_ack_enviado = ack_pkt
         proximo_seq_esperado += 1
-        print(
-            f"[>] Confirmação (ACK {pacote['seq_num']}) enviada ao cliente."
-        )
 
-    #etapa 3: reconstituicao e exibiçao da mensage, final
+        print(
+            f"[>] Confirmação (ACK {pacote['seq_num']}) enviada ao cliente.\n"
+        )
+        print("-" * 50)
+
+    # Etapa 3: Reconstituição e Exibição da Mensagem Final
     texto_final = "".join(mensagem_reconstruida)
-    
-    print("      MENSAGEM COMPLETA RECONSTRUIDA          ")
-    print(f"\"{texto_final}\"")
+
+    print("\n" + "=" * 50)
+    print("      MENSAGEM COMPLETA RECONSTRUIDA NO SERVIDOR")
+    print("=" * 50)
+    print(f'"{texto_final}"')
+    print("=" * 50 + "\n")
 
     # Encerra as conexões
     conn.close()
