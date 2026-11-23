@@ -1,5 +1,5 @@
 import socket
-import time 
+import time
 from protocolo import (
     FLAG_ACK,
     FLAG_FIN,
@@ -7,13 +7,19 @@ from protocolo import (
     criar_pacote,
     desempacotar_pacote,
     receber_pacote,
+    codificar_parametros,
+    decodificar_parametros,
+    MODO_INDIVIDUAL,
+    MODO_LOTE,
+    CONF_GBN,
+    CONF_SR,
+    TAMANHO_MINIMO_MENSAGEM_PADRAO,
 )
 
 HOST = "127.0.0.1"
 PORTA = 50000
 
 TAMANHO_BLOCO = 4
-TAMANHO_MINIMO_MENSAGEM = 30
 TIMEOUT_ACK = 1.0
 
 
@@ -31,6 +37,31 @@ def exibir_metadados(pacote, direcao: str):
     print(f"Payload                     : {pacote['payload']!r}\n")
     return pacote
 
+
+def definir_parametros_operacao():
+    print("Modo de envio: [1] Lote (janela)  [2] Individual (pacote a pacote)")
+    escolha_modo = input("Escolha o modo de envio (padrao 1): ").strip()
+    modo = MODO_INDIVIDUAL if escolha_modo == "2" else MODO_LOTE
+
+    print("Tipo de confirmacao: [1] Go-Back-N  [2] Repeticao Seletiva")
+    escolha_conf = input("Escolha o tipo de confirmacao (padrao 1): ").strip()
+    confirmacao = CONF_SR if escolha_conf == "2" else CONF_GBN
+
+    entrada_tamanho = input(
+        f"Tamanho maximo da mensagem (minimo {TAMANHO_MINIMO_MENSAGEM_PADRAO}, Enter para padrao): "
+    ).strip()
+    if entrada_tamanho == "":
+        tamanho_maximo = TAMANHO_MINIMO_MENSAGEM_PADRAO
+    else:
+        try:
+            tamanho_maximo = int(entrada_tamanho)
+        except ValueError:
+            tamanho_maximo = TAMANHO_MINIMO_MENSAGEM_PADRAO
+        if tamanho_maximo < TAMANHO_MINIMO_MENSAGEM_PADRAO:
+            print(f"[!] Valor abaixo do minimo, usando {TAMANHO_MINIMO_MENSAGEM_PADRAO}.")
+            tamanho_maximo = TAMANHO_MINIMO_MENSAGEM_PADRAO
+
+    return modo, confirmacao, tamanho_maximo
 
 def iniciar_cliente():
     cliente =  None
@@ -58,8 +89,15 @@ def iniciar_cliente():
             "\n[X] Erro: Não foi possível conectar ao servidor. Certifique-se de executar 'python3 server.py' primeiro."
         )
         return
+    modo, confirmacao, tamanho_maximo_mensagem = definir_parametros_operacao()
+
     #handshake
-    pacote_syn = criar_pacote(seq_num=0, ack_num=0, flags=FLAG_SYN, payload_texto="SYN")
+    parametros_syn = codificar_parametros({
+        "MODO": modo,
+        "CONF": confirmacao,
+        "MAXMSG": tamanho_maximo_mensagem,
+    })
+    pacote_syn = criar_pacote(seq_num=0, ack_num=0, flags=FLAG_SYN, payload_texto=parametros_syn)
     exibir_metadados(desempacotar_pacote(pacote_syn), "ENVIADO (SYN)")
     cliente.sendall(pacote_syn)
 
@@ -67,18 +105,27 @@ def iniciar_cliente():
     exibir_metadados(pkt_syn_ack, "RECEBIDO (SYN+ACK)")
 
     if not pkt_syn_ack or not ((pkt_syn_ack["flags"] & FLAG_SYN) and (pkt_syn_ack["flags"] & FLAG_ACK)):
-        print("[!] Handshake falhou ou resposta inválida do servidor.")
+        print("[!] Handshake falhou ou resposta invalida do servidor.")
         cliente.close()
         return
 
-    tamanho_janela = int(pkt_syn_ack["payload"])
-    print(f"[*] Tamanho da janela definido pelo servidor: {tamanho_janela}\n")
+    parametros_servidor = decodificar_parametros(pkt_syn_ack["payload"])
+    tamanho_janela = int(parametros_servidor.get("JANELA", 5))
+    modo_confirmado = parametros_servidor.get("MODO", modo)
+    confirmacao_confirmada = parametros_servidor.get("CONF", confirmacao)
+    tamanho_maximo_confirmado = int(parametros_servidor.get("MAXMSG", tamanho_maximo_mensagem))
+
+    print("[*] Parametros confirmados pelo servidor:")
+    print(f"    Janela de recepcao      : {tamanho_janela}")
+    print(f"    Modo de operacao        : {modo_confirmado}")
+    print(f"    Tipo de confirmacao     : {confirmacao_confirmada}")
+    print(f"    Tamanho maximo mensagem : {tamanho_maximo_confirmado}\n")
 
     #entrada da mensagem
-    mensagem = input("Digite a mensagem a ser enviada (mínimo 30 caracteres): ")
-    while len(mensagem) < TAMANHO_MINIMO_MENSAGEM:
+    mensagem = input(f"Digite a mensagem a ser enviada (minimo {tamanho_maximo_confirmado} caracteres): ")
+    while len(mensagem) < tamanho_maximo_confirmado:
         print(f"[!] Mensagem muito curta ({len(mensagem)} caracteres). Tente novamente.")
-        mensagem = input("Digite a mensagem a ser enviada (mínimo 30 caracteres): ")
+        mensagem = input(f"Digite a mensagem a ser enviada (minimo {tamanho_maximo_confirmado} caracteres): ")
 
     blocos = [
         mensagem[i:i + TAMANHO_BLOCO]

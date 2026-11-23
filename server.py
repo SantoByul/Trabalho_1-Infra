@@ -6,15 +6,35 @@ from protocolo import(
     criar_pacote,
     desempacotar_pacote,
     receber_pacote,
+    codificar_parametros,
+    decodificar_parametros,
+    MODO_LOTE,
+    CONF_GBN,
+    TAMANHO_JANELA_PADRAO,
+    TAMANHO_MINIMO_MENSAGEM_PADRAO,
 )
 
 #configuraçoes de rede
 HOST = "127.0.0.1"
 PORTA = 50000
 
-TAMANHO_JANELA_INICIAL = 5
+def definir_tamanho_janela() -> int:
+    entrada = input("Defina o tamanho da janela de recepcao (1 a 5, Enter para padrao 5): ").strip()
+    if entrada == "":
+        return TAMANHO_JANELA_PADRAO
+    try:
+        valor = int(entrada)
+    except ValueError:
+        print("[!] Valor invalido, usando padrao (5).")
+        return TAMANHO_JANELA_PADRAO
+    if valor < 1 or valor > 5:
+        print("[!] Valor fora do intervalo permitido, usando padrao (5).")
+        return TAMANHO_JANELA_PADRAO
+    return valor
 
 def iniciar_servidor():
+    tamanho_janela = definir_tamanho_janela()
+
     #cria o socket TCP (ipv4, stream)
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -33,21 +53,35 @@ def iniciar_servidor():
     pkt_syn = receber_pacote(conn)
 
     if pkt_syn and (pkt_syn["flags"] & FLAG_SYN):
+        parametros_cliente = decodificar_parametros(pkt_syn["payload"])
+        modo_solicitado = parametros_cliente.get("MODO", MODO_LOTE)
+        confirmacao_solicitada = parametros_cliente.get("CONF", CONF_GBN)
+        tamanho_max_solicitado = parametros_cliente.get(
+            "MAXMSG", str(TAMANHO_MINIMO_MENSAGEM_PADRAO)
+        )
+
         print("--- [METADADOS] HANDSHAKE RECEBIDO DO CLIENTE ---")
-        print(f"SeqNum Recebido: {pkt_syn['seq_num']}")
-        print(f"Checksum Válido: {pkt_syn['is_valido']}")
-        print(f"Payload do Handshake: {pkt_syn['payload']!r}")
+        print(f"SeqNum Recebido         : {pkt_syn['seq_num']}")
+        print(f"Checksum Valido         : {pkt_syn['is_valido']}")
+        print(f"Modo de operacao        : {modo_solicitado}")
+        print(f"Tipo de confirmacao     : {confirmacao_solicitada}")
+        print(f"Tamanho maximo mensagem : {tamanho_max_solicitado}")
+
+        resposta_parametros = codificar_parametros({
+            "JANELA": tamanho_janela,
+            "MODO": modo_solicitado,
+            "CONF": confirmacao_solicitada,
+            "MAXMSG": tamanho_max_solicitado,
+        })
 
         resposta_syn = criar_pacote(
             seq_num=0,
             ack_num=pkt_syn["seq_num"],
             flags=FLAG_SYN | FLAG_ACK,
-            payload_texto=str(TAMANHO_JANELA_INICIAL),
+            payload_texto=resposta_parametros,
         )
         conn.sendall(resposta_syn)
-        print(
-            f"[>] Resposta SYN+ACK enviada ao cliente com Janela = {TAMANHO_JANELA_INICIAL}\n"
-        )
+        print(f"[>] Resposta SYN+ACK enviada ao cliente: {resposta_parametros}\n")
 
     #etapa 2
     mensagem_reconstruida = []

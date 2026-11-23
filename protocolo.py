@@ -7,6 +7,31 @@ FLAG_ACK = 0x02
 FLAG_FIN = 0x04
 FLAG_DATA = 0x08
 
+MODO_INDIVIDUAL = "INDIVIDUAL"
+MODO_LOTE = "LOTE"
+
+CONF_GBN = "GBN"
+CONF_SR = "SR"
+
+TAMANHO_MINIMO_MENSAGEM_PADRAO = 30
+TAMANHO_JANELA_PADRAO = 5
+
+
+def codificar_parametros(parametros: dict) -> str:
+    return ";".join(f"{chave}={valor}" for chave, valor in parametros.items())
+
+
+def decodificar_parametros(texto: str) -> dict:
+    parametros = {}
+    if not texto:
+        return parametros
+    for par in texto.split(";"):
+        if "=" not in par:
+            continue
+        chave, valor = par.split("=", 1)
+        parametros[chave] = valor
+    return parametros
+
 #chave secreta usada por cliente e servidor
 CHAVE_CRIPTOGRAFIA = "REDES"
 
