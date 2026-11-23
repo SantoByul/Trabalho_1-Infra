@@ -3,6 +3,7 @@ from protocolo import(
     FLAG_ACK,
     FLAG_FIN,
     FLAG_SYN,
+    FLAG_NAK,
     criar_pacote,
     desempacotar_pacote,
     receber_pacote,
@@ -10,13 +11,14 @@ from protocolo import(
     decodificar_parametros,
     MODO_LOTE,
     CONF_GBN,
+    CONF_SR,
     TAMANHO_JANELA_PADRAO,
     TAMANHO_MINIMO_MENSAGEM_PADRAO,
 )
 
-#configuraçoes de rede
 HOST = "127.0.0.1"
 PORTA = 50000
+
 
 def definir_tamanho_janela() -> int:
     entrada = input("Defina o tamanho da janela de recepcao (1 a 5, Enter para padrao 5): ").strip()
@@ -32,15 +34,12 @@ def definir_tamanho_janela() -> int:
         return TAMANHO_JANELA_PADRAO
     return valor
 
+
 def iniciar_servidor():
     tamanho_janela = definir_tamanho_janela()
 
-    #cria o socket TCP (ipv4, stream)
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    #permite reutilizat o endereço/porta imediatamente após fechar
     servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
     servidor.bind((HOST, PORTA))
     servidor.listen(1)
 
@@ -49,28 +48,28 @@ def iniciar_servidor():
     conn, addr = servidor.accept()
     print(f"[+] Cliente conectado com sucesso! Origem: {addr}\n")
 
-    #etapa 1: handshake inicial
+    modo_negociado = MODO_LOTE
+    confirmacao_negociada = CONF_GBN
+
     pkt_syn = receber_pacote(conn)
 
     if pkt_syn and (pkt_syn["flags"] & FLAG_SYN):
         parametros_cliente = decodificar_parametros(pkt_syn["payload"])
-        modo_solicitado = parametros_cliente.get("MODO", MODO_LOTE)
-        confirmacao_solicitada = parametros_cliente.get("CONF", CONF_GBN)
-        tamanho_max_solicitado = parametros_cliente.get(
-            "MAXMSG", str(TAMANHO_MINIMO_MENSAGEM_PADRAO)
-        )
+        modo_negociado = parametros_cliente.get("MODO", MODO_LOTE)
+        confirmacao_negociada = parametros_cliente.get("CONF", CONF_GBN)
+        tamanho_max_solicitado = parametros_cliente.get("MAXMSG", str(TAMANHO_MINIMO_MENSAGEM_PADRAO))
 
         print("--- [METADADOS] HANDSHAKE RECEBIDO DO CLIENTE ---")
         print(f"SeqNum Recebido         : {pkt_syn['seq_num']}")
         print(f"Checksum Valido         : {pkt_syn['is_valido']}")
-        print(f"Modo de operacao        : {modo_solicitado}")
-        print(f"Tipo de confirmacao     : {confirmacao_solicitada}")
+        print(f"Modo de operacao        : {modo_negociado}")
+        print(f"Tipo de confirmacao     : {confirmacao_negociada}")
         print(f"Tamanho maximo mensagem : {tamanho_max_solicitado}")
 
         resposta_parametros = codificar_parametros({
             "JANELA": tamanho_janela,
-            "MODO": modo_solicitado,
-            "CONF": confirmacao_solicitada,
+            "MODO": modo_negociado,
+            "CONF": confirmacao_negociada,
             "MAXMSG": tamanho_max_solicitado,
         })
 
@@ -83,83 +82,81 @@ def iniciar_servidor():
         conn.sendall(resposta_syn)
         print(f"[>] Resposta SYN+ACK enviada ao cliente: {resposta_parametros}\n")
 
-    #etapa 2
     mensagem_reconstruida = []
     proximo_seq_esperado = 0
-    ultimo_ack_enviado = None
+    buffer_fora_de_ordem = {}
 
     while True:
         pacote = receber_pacote(conn)
         if pacote is None:
             break
 
-        print("--- [METADADOS] PACOTE RECEBIDO NO SERVIDO ---")
-        print(f"Número de Sequência (SeqNum) : {pacote['seq_num']}")
-        print(f"Flags de Controle           : {pacote['flags']}")
-        print(f"Checksum Recebido           : {hex(pacote['checksum'])}")
-        print(f"Integridade do Checksum     : {pacote['is_valido']}")
-        print(f"Payload Decifrado (4 chars) : {pacote['payload']!r}")
+        print("--- [METADADOS] PACOTE RECEBIDO NO SERVIDOR ---")
+        print(f"Numero de Sequencia (SeqNum) : {pacote['seq_num']}")
+        print(f"Flags de Controle            : {pacote['flags']}")
+        print(f"Checksum Recebido            : {hex(pacote['checksum'])}")
+        print(f"Integridade do Checksum      : {pacote['is_valido']}")
+        print(f"Payload Decifrado (4 chars)  : {pacote['payload']!r}")
 
-        #Checkpoint 3 - verificação rdt de integridade e ordem
-        #CENÁRIO 1: PACOTE CORROMPIDO (Checksum falhou)
         if not pacote["is_valido"]:
-            print(
-                f"\n [ERRO RDT] Checksum INVÁLIDO no pacote SeqNum={pacote['seq_num']}! Pacote descartado."
-            )
-            if ultimo_ack_enviado is not None:
-                print(
-                    " [RDT RECOVERY] Reenviando último ACK válido ao cliente..."
-                )
-                conn.sendall(ultimo_ack_enviado)
+            print(f"\n[ERRO RDT] Checksum INVALIDO no pacote SeqNum={pacote['seq_num']}! Pacote descartado.")
+            nak_pkt = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_NAK, payload_texto="NAK")
+            conn.sendall(nak_pkt)
+            print(f"[RDT RECOVERY] NAK enviado para SeqNum={pacote['seq_num']}.")
             print("-" * 50 + "\n")
             continue
 
-        #CENÁRIO 2: PACOTE FORA DE ORDEM
-        if pacote["seq_num"] != proximo_seq_esperado:
-            print(
-                f"\n [ERRO RDT] Pacote FORA DE ORDEM! Esperado SeqNum={proximo_seq_esperado}, recebido={pacote['seq_num']}."
-            )
-            print(
-                " [RDT RECOVERY] Pacote descartado. Reenviando último ACK válido ao cliente..."
-            )
-            if ultimo_ack_enviado is not None:
-                conn.sendall(ultimo_ack_enviado)
-            print("-" * 50 + "\n")
-            continue
-        
-        #CENÁRIO 3: SINAL DE ENCERRAMENTO (FIN)
         if pacote["flags"] & FLAG_FIN:
-            print(
-                "\n[!] Sinal de Encerramento (FIN) detectado. Finalizando recepção..."
-            )
-            ack_fin = criar_pacote(
-                seq_num=0,
-                ack_num=pacote["seq_num"],
-                flags=FLAG_ACK | FLAG_FIN,
-                payload_texto="OK",
-            )
+            print("\n[!] Sinal de Encerramento (FIN) detectado. Finalizando recepcao...")
+            ack_fin = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_ACK | FLAG_FIN, payload_texto="OK")
             conn.sendall(ack_fin)
             break
 
-        # CENÁRIO 4: PACOTE VÁLIDO E EM ORDEM (Caminho Feliz / Recuperado)
-        mensagem_reconstruida.append(pacote["payload"])
+        if confirmacao_negociada == CONF_SR:
+            if pacote["seq_num"] < proximo_seq_esperado:
+                ack_pkt = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_ACK, payload_texto="ACK")
+                conn.sendall(ack_pkt)
+                print(f"[>] Pacote duplicado SeqNum={pacote['seq_num']}, ACK reenviado.\n")
+                print("-" * 50)
+                continue
 
-        ack_pkt = criar_pacote(
-            seq_num=0,
-            ack_num=pacote["seq_num"],
-            flags=FLAG_ACK,
-            payload_texto="ACK",
-        )
+            if pacote["seq_num"] != proximo_seq_esperado:
+                buffer_fora_de_ordem[pacote["seq_num"]] = pacote["payload"]
+                ack_pkt = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_ACK, payload_texto="ACK")
+                conn.sendall(ack_pkt)
+                print(f"[RDT] Pacote fora de ordem bufferizado (SeqNum={pacote['seq_num']}). ACK individual enviado.\n")
+                print("-" * 50)
+                continue
+
+            mensagem_reconstruida.append(pacote["payload"])
+            ack_pkt = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_ACK, payload_texto="ACK")
+            conn.sendall(ack_pkt)
+            proximo_seq_esperado += 1
+
+            while proximo_seq_esperado in buffer_fora_de_ordem:
+                mensagem_reconstruida.append(buffer_fora_de_ordem.pop(proximo_seq_esperado))
+                proximo_seq_esperado += 1
+
+            print(f"[>] Confirmacao individual (ACK {pacote['seq_num']}) enviada ao cliente.\n")
+            print("-" * 50)
+            continue
+
+        if pacote["seq_num"] != proximo_seq_esperado:
+            print(f"\n[ERRO RDT] Pacote FORA DE ORDEM! Esperado SeqNum={proximo_seq_esperado}, recebido={pacote['seq_num']}.")
+            nak_pkt = criar_pacote(seq_num=0, ack_num=proximo_seq_esperado, flags=FLAG_NAK, payload_texto="NAK")
+            conn.sendall(nak_pkt)
+            print(f"[RDT RECOVERY] Pacote descartado. NAK enviado (esperado SeqNum={proximo_seq_esperado}).")
+            print("-" * 50 + "\n")
+            continue
+
+        mensagem_reconstruida.append(pacote["payload"])
+        ack_pkt = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_ACK, payload_texto="ACK")
         conn.sendall(ack_pkt)
-        ultimo_ack_enviado = ack_pkt
         proximo_seq_esperado += 1
 
-        print(
-            f"[>] Confirmação (ACK {pacote['seq_num']}) enviada ao cliente.\n"
-        )
+        print(f"[>] Confirmacao (ACK {pacote['seq_num']}) enviada ao cliente.\n")
         print("-" * 50)
 
-    # Etapa 3: Reconstituição e Exibição da Mensagem Final
     texto_final = "".join(mensagem_reconstruida)
 
     print("\n" + "=" * 50)
@@ -168,10 +165,9 @@ def iniciar_servidor():
     print(f'"{texto_final}"')
     print("=" * 50 + "\n")
 
-    # Encerra as conexões
     conn.close()
     servidor.close()
-    print("[*] Conexão encerrada pelo servidor.")
+    print("[*] Conexao encerrada pelo servidor.")
 
 
 if __name__ == "__main__":
