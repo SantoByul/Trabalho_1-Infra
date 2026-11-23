@@ -65,13 +65,55 @@ def definir_parametros_operacao():
     return modo, confirmacao, tamanho_maximo
 
 
-def enviar_mensagem_individual(cliente, blocos):
+def definir_falhas_simuladas(total_blocos):
+    print(f"\nSimulacao determinista de falhas (Checkpoint 3) - SeqNum valido: 0 a {total_blocos - 1}")
+    entrada_corrompidos = input("SeqNum(s) para simular CORRUPCAO, separados por virgula (Enter para nenhum): ").strip()
+    entrada_perdidos = input("SeqNum(s) para simular PERDA (pacote nao enviado), separados por virgula (Enter para nenhum): ").strip()
+
+    seqs_corrompidos = set()
+    for item in entrada_corrompidos.split(","):
+        item = item.strip()
+        if item.isdigit() and 0 <= int(item) < total_blocos:
+            seqs_corrompidos.add(int(item))
+
+    seqs_perdidos = set()
+    for item in entrada_perdidos.split(","):
+        item = item.strip()
+        if item.isdigit() and 0 <= int(item) < total_blocos:
+            seqs_perdidos.add(int(item))
+
+    if seqs_corrompidos:
+        print(f"[SIMULACAO] SeqNum(s) marcados para corrupcao: {sorted(seqs_corrompidos)}")
+    if seqs_perdidos:
+        print(f"[SIMULACAO] SeqNum(s) marcados para perda: {sorted(seqs_perdidos)}")
+    print()
+
+    return seqs_corrompidos, seqs_perdidos
+
+
+def enviar_com_falha_simulada(cliente, pacote, seq_num, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas):
+    if seq_num in seqs_perdidos and seq_num not in seqs_ja_aplicadas:
+        seqs_ja_aplicadas.add(seq_num)
+        print(f"[SIMULACAO] Pacote SeqNum={seq_num} NAO enviado (perda simulada). Aguardando timeout/NAK para retransmitir.\n")
+        return
+
+    if seq_num in seqs_corrompidos and seq_num not in seqs_ja_aplicadas:
+        seqs_ja_aplicadas.add(seq_num)
+        pacote = bytearray(pacote)
+        pacote[-1] ^= 0xFF
+        pacote = bytes(pacote)
+        print(f"[SIMULACAO] Pacote SeqNum={seq_num} enviado CORROMPIDO de proposito.\n")
+
+    cliente.sendall(pacote)
+
+
+def enviar_mensagem_individual(cliente, blocos, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas):
     for indice, bloco in enumerate(blocos):
         confirmado = False
         while not confirmado:
             pacote = criar_pacote(seq_num=indice, ack_num=0, flags=FLAG_ACK, payload_texto=bloco)
             exibir_metadados(desempacotar_pacote(pacote), f"ENVIADO (SeqNum={indice})")
-            cliente.sendall(pacote)
+            enviar_com_falha_simulada(cliente, pacote, indice, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas)
 
             try:
                 pkt_resposta = receber_pacote(cliente)
@@ -87,10 +129,11 @@ def enviar_mensagem_individual(cliente, blocos):
                 print(f"[!] Timeout esperando confirmacao do SeqNum={indice}. Retransmitindo...\n")
 
 
-def enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirmada):
+def enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirmada, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas):
     base = 0
     proximo_a_enviar = 0
     confirmados = [False] * len(blocos)
+    ultimo_nak_tratado = None
 
     while base < len(blocos):
         while proximo_a_enviar < len(blocos) and proximo_a_enviar < base + tamanho_janela:
@@ -105,7 +148,7 @@ def enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirm
                 payload_texto=blocos[proximo_a_enviar],
             )
             exibir_metadados(desempacotar_pacote(pacote), f"ENVIADO (SeqNum={proximo_a_enviar})")
-            cliente.sendall(pacote)
+            enviar_com_falha_simulada(cliente, pacote, proximo_a_enviar, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas)
             proximo_a_enviar += 1
 
         try:
@@ -117,19 +160,27 @@ def enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirm
 
             elif pkt_resposta and (pkt_resposta["flags"] & FLAG_NAK):
                 seq_problema = pkt_resposta["ack_num"]
-                print(f"[!] NAK recebido para SeqNum={seq_problema}. Retransmitindo imediatamente...\n")
                 if confirmacao_confirmada == CONF_SR:
-                    pacote = criar_pacote(
-                        seq_num=seq_problema,
-                        ack_num=0,
-                        flags=FLAG_ACK,
-                        payload_texto=blocos[seq_problema],
-                    )
-                    exibir_metadados(desempacotar_pacote(pacote), f"REENVIADO (SeqNum={seq_problema})")
-                    cliente.sendall(pacote)
+                    if not confirmados[seq_problema]:
+                        print(f"[!] NAK recebido para SeqNum={seq_problema}. Retransmitindo imediatamente...\n")
+                        pacote = criar_pacote(
+                            seq_num=seq_problema,
+                            ack_num=0,
+                            flags=FLAG_ACK,
+                            payload_texto=blocos[seq_problema],
+                        )
+                        exibir_metadados(desempacotar_pacote(pacote), f"REENVIADO (SeqNum={seq_problema})")
+                        enviar_com_falha_simulada(cliente, pacote, seq_problema, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas)
+                    else:
+                        print(f"[!] NAK obsoleto para SeqNum={seq_problema} ignorado (ja confirmado).\n")
                 else:
-                    base = seq_problema
-                    proximo_a_enviar = base
+                    if seq_problema != ultimo_nak_tratado:
+                        ultimo_nak_tratado = seq_problema
+                        print(f"[!] NAK recebido para SeqNum={seq_problema}. Retransmitindo janela a partir dele...\n")
+                        base = seq_problema
+                        proximo_a_enviar = base
+                    else:
+                        print(f"[!] NAK duplicado para SeqNum={seq_problema} ignorado (retransmissao ja em andamento).\n")
 
             elif pkt_resposta and (pkt_resposta["flags"] & FLAG_ACK):
                 if confirmacao_confirmada == CONF_SR:
@@ -147,7 +198,7 @@ def enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirm
                     if not confirmados[i]:
                         pacote = criar_pacote(seq_num=i, ack_num=0, flags=FLAG_ACK, payload_texto=blocos[i])
                         exibir_metadados(desempacotar_pacote(pacote), f"REENVIADO (SeqNum={i})")
-                        cliente.sendall(pacote)
+                        enviar_com_falha_simulada(cliente, pacote, i, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas)
             else:
                 print(f"[!] Timeout esperando ACK. Retransmitindo a partir do SeqNum={base}...\n")
                 proximo_a_enviar = base
@@ -218,11 +269,14 @@ def iniciar_cliente():
     blocos = [mensagem[i:i + TAMANHO_BLOCO] for i in range(0, len(mensagem), TAMANHO_BLOCO)]
     print(f"[*] Mensagem fatiada em {len(blocos)} blocos.\n")
 
+    seqs_corrompidos, seqs_perdidos = definir_falhas_simuladas(len(blocos))
+    seqs_ja_aplicadas = set()
+
     cliente.settimeout(TIMEOUT_ACK)
     if modo_confirmado == MODO_INDIVIDUAL:
-        enviar_mensagem_individual(cliente, blocos)
+        enviar_mensagem_individual(cliente, blocos, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas)
     else:
-        enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirmada)
+        enviar_mensagem_em_lote(cliente, blocos, tamanho_janela, confirmacao_confirmada, seqs_corrompidos, seqs_perdidos, seqs_ja_aplicadas)
 
     seq_fin = len(blocos)
     fin_confirmado = False
@@ -230,7 +284,13 @@ def iniciar_cliente():
     while not fin_confirmado:
         pacote_fin = criar_pacote(seq_num=seq_fin, ack_num=0, flags=FLAG_FIN, payload_texto="FIN")
         exibir_metadados(desempacotar_pacote(pacote_fin), f"ENVIADO (FIN, SeqNum={seq_fin})")
-        cliente.sendall(pacote_fin)
+
+        try:
+            cliente.sendall(pacote_fin)
+        except OSError:
+            print("[!] Conexao ja encerrada pelo servidor ao tentar retransmitir FIN.\n")
+            fin_confirmado = True
+            break
 
         try:
             pkt_fin_ack = receber_pacote(cliente)
@@ -240,6 +300,9 @@ def iniciar_cliente():
                 fin_confirmado = True
         except socket.timeout:
             print("[!] Timeout esperando ACK+FIN. Retransmitindo FIN...\n")
+        except OSError:
+            print("[!] Conexao encerrada pelo servidor. Assumindo encerramento confirmado.\n")
+            fin_confirmado = True
 
     cliente.settimeout(None)
     cliente.close()

@@ -18,6 +18,7 @@ from protocolo import(
 
 HOST = "127.0.0.1"
 PORTA = 50000
+TIMEOUT_ESPERA_FIN = 2.0
 
 
 def definir_tamanho_janela() -> int:
@@ -110,6 +111,20 @@ def iniciar_servidor():
             print("\n[!] Sinal de Encerramento (FIN) detectado. Finalizando recepcao...")
             ack_fin = criar_pacote(seq_num=0, ack_num=pacote["seq_num"], flags=FLAG_ACK | FLAG_FIN, payload_texto="OK")
             conn.sendall(ack_fin)
+
+            conn.settimeout(TIMEOUT_ESPERA_FIN)
+            aguardando_fin_repetido = True
+            while aguardando_fin_repetido:
+                try:
+                    pacote_repetido = receber_pacote(conn)
+                    if pacote_repetido and (pacote_repetido["flags"] & FLAG_FIN):
+                        print("[RDT RECOVERY] FIN repetido recebido (ACK+FIN anterior pode ter se perdido/corrompido). Reenviando confirmacao...")
+                        conn.sendall(ack_fin)
+                    else:
+                        aguardando_fin_repetido = False
+                except socket.timeout:
+                    aguardando_fin_repetido = False
+            conn.settimeout(None)
             break
 
         if confirmacao_negociada == CONF_SR:
